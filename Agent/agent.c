@@ -10,126 +10,138 @@
 
 typedef struct methodTiming MethodTiming;
 
+typedef struct treeNode TreeNode;
+
+#define MAX_FRAMES 10
+
 struct methodTiming {
 
 	jmethodID method;
 
 	char* methodName;
 
-	jlong starttime;
-
-	jlong endtime;
-
-	MethodTiming *next;
-
-	MethodTiming *caller;
+	int count;
 
 };
 
-MethodTiming* head = NULL;
-jthread mainThread;
+struct treeNode {
 
-MethodTiming* insert(jmethodID method, char* methodName, jlong starttime) {
+	MethodTiming* methodTiming;
 
-	MethodTiming* temp = (MethodTiming *) malloc(sizeof(MethodTiming));
+	TreeNode* chidren;
 
-	temp->method = method;
+};
 
-	temp->starttime = starttime;
+TreeNode * createTreeNode(MethodTiming* methodTiming) {
+	TreeNode* treeNode = (TreeNode*) malloc(sizeof(TreeNode));
+	treeNode->methodTiming = methodTiming;
+	return treeNode;
+}
 
-	temp->endtime = 0;
+MethodTiming* createMethodTiming(jmethodID method, char* methodName) {
 
-	temp->methodName = methodName;
+	MethodTiming* timing = (MethodTiming*) malloc(sizeof(MethodTiming));
 
-	temp->next = head;
+	timing->method = method;
 
-	temp->caller = NULL;
+	timing->methodName = methodName;
 
-	head = temp;
-	return temp;
+	return timing;
 
 }
 
-MethodTiming* search(jmethodID method) {
-
-	MethodTiming* temp = head;
-
-	while (temp != NULL) {
-
-		if (temp->method == method)
-
-			return temp;
-
-		temp = temp->next;
-
-	}
-
-	return NULL;
-
-}
-
-void JNICALL OnMethodEntry(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread, jmethodID method) {
+void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 
 	jvmtiFrameInfo frames[2];
 
-	jvmtiError error;
+	jvmtiStackInfo *stack_info;
 
-	jlong time;
-
-	jint count;
+	jint thread_count;
 
 	char *methodName;
-
-	if ((error = (*jvmti)->GetStackTrace(jvmti, thread, 0, 2, frames, &count)) != JVMTI_ERROR_NONE || count == 0) {
-
-		printf("Error stack trace\n");
-		return;
-	}
-
-	if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &time)) != JVMTI_ERROR_NONE) {
-
-		printf("Error method entry\n");
-
-		return;
-
-	}
-
-	if ((error = (*jvmti)->GetMethodName(jvmti, method, &methodName, NULL, NULL)) != JVMTI_ERROR_NONE) {
-
-		printf("Error method name\n");
-
-		return;
-
-	}
-
-	MethodTiming* timing = search(frames[0].method);
-	timing = timing == NULL ? insert(frames[0].method, methodName, time) : timing;
-	if (count > 1) {
-		timing->caller = search(frames[1].method);
-	}
-}
-
-void JNICALL OnMethodExit(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread, jmethodID method, jboolean was_popped_by_exception, jvalue return_value) {
-
 	jvmtiError error;
+
 	jlong time;
 
-	if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &time)) != JVMTI_ERROR_NONE) {
+	TreeNode* parent = (TreeNode *) malloc(sizeof(TreeNode));
 
-		printf("Error method exit");
+	if ((error = (*jvmti)->GetAllStackTraces(jvmti, MAX_FRAMES, &stack_info, &thread_count)) != JVMTI_ERROR_NONE) {
+
+		printf("Error stack trace\n");
 
 		return;
 
 	}
 
-	search(method)->endtime = time;;
+	int ti;
+
+	for (ti = 0; ti < thread_count; ++ti) {
+
+		jvmtiStackInfo *infop = &stack_info[ti];
+
+		jvmtiFrameInfo *frames = infop->frame_buffer;
+
+		int fi;
+		TreeNode * current = parent;
+
+		for (fi = 0; fi < infop->frame_count; fi++) {
+
+			TreeNode* children = parent->children;
+			while(children != NULL) {
+				if (children->methodTiming->method == frames[fi].method) {
+					break;
+				}
+				children = children->children;
+			}
+
+			if ((error = (*jvmti)->GetMethodName(jvmti, frames[fi].method, &methodName, NULL, NULL)) != JVMTI_ERROR_NONE) {
+
+				printf("Error method name\n");
+
+				return;
+
+			}
+
+			//MethodTiming* timing = createMethodTiming(frames[fi].method, methodName);
+
+			//if (current == NULL){
+			//	current = createTreeNode(timing);
+			//}
+
+			//myFramePrinter(frames[fi].method, frames[fi].location);
+
+		}
+	}
+
+	/*if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &time)) != JVMTI_ERROR_NONE){
+
+	 printf("Error current thread cpu time %s\n", methodName);
+
+	 return;
+
+	 }*/
+
+	if ((error = (*jvmti)->Deallocate(jvmti, stack_info)) != JVMTI_ERROR_NONE) {
+
+		printf("Error deallocate stack info\n");
+
+		return;
+
+	}
+
+	printf("Hello World");
 
 }
 
 void JNICALL OnVMInit(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread) {
-	mainThread = thread;
 
-	//printf("onVMInit\n");
+	jclass thread_class = (*jni)->FindClass(jni, "java/lang/Thread");
+
+	jmethodID ctor_id = (*jni)->GetMethodID(jni, thread_class, "<init>", "()V");
+
+	jthread newthread = (jthread) (*jni)->NewObject(jni, thread_class, ctor_id);
+
+	(*jvmti)->RunAgentThread(jvmti, newthread, run, NULL, JVMTI_THREAD_MAX_PRIORITY);
 
 }
 
@@ -148,34 +160,15 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 	// error checks
 
 	if ((error = (*jvmti)->GetPotentialCapabilities(jvmti,
+			&potentialCapabilities)) != JVMTI_ERROR_NONE) {
 
-	&potentialCapabilities)) != JVMTI_ERROR_NONE) {
-
-		return 0;
-
-	}
-
-	if (potentialCapabilities.can_generate_method_entry_events) {
-
-		requestedCapabilities.can_generate_method_entry_events = 1;
-
-	}
-
-	if (potentialCapabilities.can_generate_method_exit_events) {
-
-		requestedCapabilities.can_generate_method_exit_events = 1;
+		return -1;
 
 	}
 
 	if (potentialCapabilities.can_access_local_variables) {
 
 		requestedCapabilities.can_access_local_variables = 1;
-
-	}
-
-	if (potentialCapabilities.can_get_thread_cpu_time) {
-
-		requestedCapabilities.can_get_thread_cpu_time = 1;
 
 	}
 
@@ -188,8 +181,7 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 	// enable method entry and exit capabilities
 
 	if ((error = (*jvmti)->AddCapabilities(jvmti, &requestedCapabilities))
-
-	!= JVMTI_ERROR_NONE) {
+			!= JVMTI_ERROR_NONE) {
 
 		return 0;
 
@@ -201,20 +193,10 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 
 	callbacks.VMInit = OnVMInit;
 
-	callbacks.MethodEntry = OnMethodEntry;
-
-	callbacks.MethodExit = OnMethodExit;
-
 	(*jvmti)->SetEventCallbacks(jvmti, &callbacks, sizeof(callbacks));
 
 	(*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE, JVMTI_EVENT_VM_INIT,
 			NULL);
-
-	(*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE,
-			JVMTI_EVENT_METHOD_ENTRY, NULL);
-
-	(*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE,
-			JVMTI_EVENT_METHOD_EXIT, NULL);
 
 	return 0;
 
@@ -222,18 +204,15 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *_vm) {
 
-	MethodTiming* temp = head;
+	/*MethodTiming* temp = head;
 
-	while (temp != NULL) {
+	 while (temp != NULL) {
 
-		printf("%s %lu %lu %lu", temp->methodName, (long)temp->starttime, (long) temp->endtime, (long)(temp->endtime - temp->starttime));
-		if (temp->caller != NULL) {
-			printf("\t\t%s\n", temp->caller->methodName);
-		}
+	 printf("%s %lu %lu %lu\n", temp->methodName, (long)temp->starttime, (long) temp->endtime, (long)(temp->endtime - temp->starttime));
 
-		temp = temp->next;
+	 temp = temp->next;
 
-	}
+	 }*/
 
 }
 
