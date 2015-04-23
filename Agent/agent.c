@@ -27,8 +27,9 @@ struct methodTiming {
 };
 
 MethodTiming* head = NULL;
+jthread mainThread;
 
-void insert(jmethodID method, char* methodName, jlong starttime) {
+MethodTiming* insert(jmethodID method, char* methodName, jlong starttime) {
 
 	MethodTiming* temp = (MethodTiming *) malloc(sizeof(MethodTiming));
 
@@ -45,6 +46,7 @@ void insert(jmethodID method, char* methodName, jlong starttime) {
 	temp->caller = NULL;
 
 	head = temp;
+	return temp;
 
 }
 
@@ -68,15 +70,21 @@ MethodTiming* search(jmethodID method) {
 
 void JNICALL OnMethodEntry(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread, jmethodID method) {
 
-	jvmtiError error;
-
 	jvmtiFrameInfo frames[2];
 
-	jlong time = NULL;
+	jvmtiError error;
+
+	jlong time;
 
 	jint count;
 
 	char *methodName;
+
+	if ((error = (*jvmti)->GetStackTrace(jvmti, thread, 0, 2, frames, &count)) != JVMTI_ERROR_NONE || count == 0) {
+
+		printf("Error stack trace\n");
+		return;
+	}
 
 	if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &time)) != JVMTI_ERROR_NONE) {
 
@@ -94,30 +102,17 @@ void JNICALL OnMethodEntry(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread, jmethod
 
 	}
 
-	if ((error = (*jvmti)->GetStackTrace(jvmti, thread, 1, 2, &frames, &count)) == JVMTI_ERROR_NONE && count > 1) {
-
-		insert(method, methodName, time);
-
-		if (count >= 2) {
-			MethodTiming* node = search(frames[0].method);
-
-			head->caller = node;
-
-		}
-
-	} else {
-		insert(method, methodName, time);
+	MethodTiming* timing = search(frames[0].method);
+	timing = timing == NULL ? insert(frames[0].method, methodName, time) : timing;
+	if (count > 1) {
+		timing->caller = search(frames[1].method);
 	}
-
 }
 
 void JNICALL OnMethodExit(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread, jmethodID method, jboolean was_popped_by_exception, jvalue return_value) {
 
-	jlong time = NULL;
-
 	jvmtiError error;
-
-	int i = 0;
+	jlong time;
 
 	if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &time)) != JVMTI_ERROR_NONE) {
 
@@ -127,16 +122,14 @@ void JNICALL OnMethodExit(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread, jmethodI
 
 	}
 
-	MethodTiming* methodTiming = search(method);
-	if (methodTiming != NULL) {
-		methodTiming->endtime = time;
-	}
+	search(method)->endtime = time;;
 
 }
 
 void JNICALL OnVMInit(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread) {
+	mainThread = thread;
 
-	printf("onVMInit\n");
+	//printf("onVMInit\n");
 
 }
 
@@ -233,19 +226,10 @@ JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *_vm) {
 
 	while (temp != NULL) {
 
-		printf("%s %lu %lu %lu", temp->methodName, (long)temp->starttime, (long) temp->endtime, (long)temp->endtime - temp->starttime);
-
-		MethodTiming * caller = head->caller;
-
-		while(caller != NULL) {
-
-			printf("\t %s", caller->methodName);
-
-			caller = caller->caller;
-
+		printf("%s %lu %lu %lu", temp->methodName, (long)temp->starttime, (long) temp->endtime, (long)(temp->endtime - temp->starttime));
+		if (temp->caller != NULL) {
+			printf("\t\t%s\n", temp->caller->methodName);
 		}
-
-		printf("\n");
 
 		temp = temp->next;
 
