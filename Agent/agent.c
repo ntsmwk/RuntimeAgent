@@ -41,7 +41,7 @@ jlong starttime, endtime;
 int stackCount;
 time_t starttime_c, endtime_c;
 
-NodeList * list;
+NodeList* list;
 
 TreeNode* createTreeNode(MethodTiming* methodTiming) {
 	TreeNode* treeNode = (TreeNode*) malloc(sizeof(TreeNode));
@@ -96,7 +96,7 @@ TreeNode* insertChildren(TreeNode* parent, TreeNode* insertChildren){
 		count++;
 	}
 	memcpy(&(list[count]), insertChildren, sizeof(TreeNode));
-	free(insertChildren);
+	//free(insertChildren);
 	list[count].isSet = TRUE;
 	return &(list[count]);
 }
@@ -138,7 +138,7 @@ void printTree(TreeNode* top, int level){
 }
 
 NodeList * searchNodeEntry(jmethodID method){
-	NodeList * current = list;
+	NodeList* current = list;
 	while(current != NULL){
 		if (current->method == method){
 			return current;		
@@ -149,23 +149,21 @@ NodeList * searchNodeEntry(jmethodID method){
 }
 
 void buildMethodList(TreeNode * node, int level){
-	if (node->method == NULL){
-		return;			
-	}
-
 	int count = 0;
 	TreeNode * children = node->children;
-	while(count <= node->childrenCount && &(children[count]) != NULL && children[count].isSet){
+	while(count < node->childrenCount && &(children[count]) != NULL && children[count].isSet){
 		jmethodID methodId = children[count].method->method;
 		int occurrences = children[count].method->count;
 		NodeList * entry = searchNodeEntry(methodId);
 		entry = entry == NULL ? insertNodeEntry(methodId, children[count].method->methodName) : entry; 
+		printf("Level; %d, %s\n", level, entry->methodName);
 		if (level == 0){
 			entry->selfTime += occurrences;
 		} else {
 			entry->wallClockTime += occurrences;
 		}
 		buildMethodList(&(children[count]), level + 1);
+		count++;
 	}
 }
 
@@ -271,13 +269,17 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 	return 0;
 }
 
-JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *_vm) {
-
-		
+JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *_vm) {	
 	buildMethodList(top, 0);
-
 	
 	printTree(top,0);
+
+	NodeList * node = list;
+	printf("Top Methods\n");
+	while(node != NULL){
+		printf("%s %d %d\n", node->methodName, node->selfTime, node->wallClockTime);
+		node = node->next;	
+	}
 	printf("\nRuntime: %lu \n StackCount: %d\n", (long) (endtime-starttime), stackCount);
 	printf("\nRuntime: %lu \n", endtime_c-starttime_c);
 	
