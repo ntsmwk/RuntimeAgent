@@ -8,13 +8,12 @@
 typedef struct methodTiming MethodTiming;
 typedef struct treeNode TreeNode;
 typedef struct nodeList NodeList;
-#define MAX_FRAMES 10
-#define INITIAL_CHILDREN_COUNT 2
+
 #define CHILDREN_COUNT_MULTIPLIER 2
+#define INITIAL_CHILDREN_COUNT 2
+#define MAX_FRAMES 10
 #define TRUE 1
 #define FALSE 0
-
-
 
 struct methodTiming {
 	jmethodID method;
@@ -29,11 +28,20 @@ struct treeNode {
 	int isSet;
 };
 
+struct nodeList {
+	jmethodID method;
+	char * methodName;
+	int selfTime;
+	int wallClockTime;
+	NodeList * next;
+};
+
 TreeNode* top;
 jlong starttime, endtime;
 int stackCount;
 time_t starttime_c, endtime_c;
 
+NodeList * list;
 
 TreeNode* createTreeNode(MethodTiming* methodTiming) {
 	TreeNode* treeNode = (TreeNode*) malloc(sizeof(TreeNode));
@@ -59,7 +67,7 @@ TreeNode* searchChildren(TreeNode* parent, jmethodID methodID){
 	
 	while(&(temp[counter]) != NULL && temp[counter].isSet && counter < parent->childrenCount){
 		if(temp[counter].method->method == methodID){
-				return &temp[counter];
+			return &temp[counter];
 		}
 		counter++;
 	}
@@ -79,14 +87,11 @@ void copyAndExtendChildrenList(TreeNode* parent){
 TreeNode* insertChildren(TreeNode* parent, TreeNode* insertChildren){
 	TreeNode* list = parent->children;
 	int count = 0;
-	
 	while(list[count].isSet){
-		
 		//List is full
 		if(count == parent->childrenCount){
 			copyAndExtendChildrenList(parent);
-			break;
-			
+			break;	
 		}
 		count++;
 	}
@@ -94,9 +99,18 @@ TreeNode* insertChildren(TreeNode* parent, TreeNode* insertChildren){
 	free(insertChildren);
 	list[count].isSet = TRUE;
 	return &(list[count]);
-	
 }
 
+NodeList * insertNodeEntry(jmethodID method, char * methodName){
+	NodeList * node = (NodeList *) malloc(sizeof(NodeList));
+	node->method = method;
+	node->methodName = methodName;
+	node->selfTime = 0;
+	node->wallClockTime = 0;
+	node->next = list;
+	list = node;
+	return list;
+}
 
 void freeAll(TreeNode* top){
 	TreeNode* temp = top->children;
@@ -108,19 +122,50 @@ void freeAll(TreeNode* top){
 	free(top);
 }
 
-void printTree(TreeNode* top, int level){
-	
-	TreeNode* children = top->children;
-	int count = 0;
-	
-	while(count < top->childrenCount && &(children[count]) != NULL && children[count].isSet){
-		printTree(&(children[count]), level+1);
-		count++;
-	}
+void printTree(TreeNode* top, int level){	
 	if(top->method != NULL && top->method->methodName != NULL){
 		printf("%d %s %d\n", level, top->method->methodName, top->method->count);
 	} else{
 		printf("%d TOP\n", level);	
+	}
+	
+	TreeNode* children = top->children;
+	int count = 0;
+	while(count < top->childrenCount && &(children[count]) != NULL && children[count].isSet){
+		printTree(&(children[count]), level+1);
+		count++;
+	}
+}
+
+NodeList * searchNodeEntry(jmethodID method){
+	NodeList * current = list;
+	while(current != NULL){
+		if (current->method == method){
+			return current;		
+		}
+		current = current->next;	
+	}
+	return NULL;
+}
+
+void buildMethodList(TreeNode * node, int level){
+	if (node->method == NULL){
+		return;			
+	}
+
+	int count = 0;
+	TreeNode * children = node->children;
+	while(count <= node->childrenCount && &(children[count]) != NULL && children[count].isSet){
+		jmethodID methodId = children[count].method->method;
+		int occurrences = children[count].method->count;
+		NodeList * entry = searchNodeEntry(methodId);
+		entry = entry == NULL ? insertNodeEntry(methodId, children[count].method->methodName) : entry; 
+		if (level == 0){
+			entry->selfTime += occurrences;
+		} else {
+			entry->wallClockTime += occurrences;
+		}
+		buildMethodList(&(children[count]), level + 1);
 	}
 }
 
@@ -139,8 +184,6 @@ void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 
 
 	while(TRUE){
-		
-		
 		if ((error = (*jvmti)->GetAllStackTraces(jvmti, MAX_FRAMES, &stack_info, &thread_count)) != JVMTI_ERROR_NONE) {
 			break;
 		}
@@ -152,46 +195,36 @@ void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 			TreeNode* current = top;
 			stackCount++;
 
-			
 			for (fi = infop->frame_count - 1; fi >= 0; fi--) {
 				if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &endtime)) != JVMTI_ERROR_NONE){
-				printf("time error %d", error);
-		
-			}
+					printf("time error %d", error);	
+					break;		
+				}
 				if ((error = (*jvmti)->GetMethodName(jvmti, frames[fi].method, &methodName, NULL, NULL)) != JVMTI_ERROR_NONE) {
 					break;
 				}
 
-				
-				TreeNode* children = searchChildren(current, frames[fi].method);
-				
+				TreeNode* children = searchChildren(current, frames[fi].method);				
 				if(children == NULL){
-				
 					MethodTiming* childMethod = createMethodTiming(frames[fi].method, methodName);
-					//printf("Not Found MethodName: %d %s\n", level, methodName);
 					TreeNode* childNode = createTreeNode(childMethod);
 					current = insertChildren(current, childNode);
 				}
 				else{
-					//printf("Found MethodName: %d, %s\n", level, children->method->methodName);
 					children->method->count++;
 					current = children;
 				}
-		
 			}
 		}
 				
 		//TODO find out why not possible...
 		//freeAll(top);
 	}
-
 	
 	time(&endtime_c);
-	if ((error = (*jvmti)->Deallocate(jvmti, stack_info)) != JVMTI_ERROR_NONE) {
-				printf("Error deallocate stack info\n");
-				//return;
+	if ((error = (*jvmti)->Deallocate(jvmti, (unsigned char *)stack_info)) != JVMTI_ERROR_NONE) {
+		printf("Error deallocate stack info\n");
 	}
-	
 }
 
 void JNICALL OnVMInit(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread) {
@@ -199,37 +232,35 @@ void JNICALL OnVMInit(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread) {
 	jmethodID ctor_id = (*jni)->GetMethodID(jni, thread_class, "<init>", "()V");
 	jthread newthread = (jthread) (*jni)->NewObject(jni, thread_class, ctor_id);
 	(*jvmti)->RunAgentThread(jvmti, newthread, run, NULL, JVMTI_THREAD_MAX_PRIORITY);
-
 }
 
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) {
 	jvmtiEnv* jvmti = NULL;
-	(*_vm)->GetEnv(_vm, (void**) &jvmti, JVMTI_VERSION);
 	jvmtiError error;
+	(*_vm)->GetEnv(_vm, (void**) &jvmti, JVMTI_VERSION);
+
 	jvmtiCapabilities requestedCapabilities, potentialCapabilities;
 	memset(&requestedCapabilities, 0, sizeof(requestedCapabilities));
-	// error checks
-	if ((error = (*jvmti)->GetPotentialCapabilities(jvmti,
-		&potentialCapabilities)) != JVMTI_ERROR_NONE) {
+	if ((error = (*jvmti)->GetPotentialCapabilities(jvmti, &potentialCapabilities)) != JVMTI_ERROR_NONE) {
 		return -1;
 	}
+
 	if (potentialCapabilities.can_access_local_variables) {
 		requestedCapabilities.can_access_local_variables = 1;
 	}
 	if (potentialCapabilities.can_get_current_thread_cpu_time) {
 		requestedCapabilities.can_get_current_thread_cpu_time = 1;
 	}
-	// enable method entry and exit capabilities
-	if ((error = (*jvmti)->AddCapabilities(jvmti, &requestedCapabilities))
-		!= JVMTI_ERROR_NONE) {
-		return 0;
+
+	if ((error = (*jvmti)->AddCapabilities(jvmti, &requestedCapabilities)) != JVMTI_ERROR_NONE) {
+		return -1;
 	}
+
 	jvmtiEventCallbacks callbacks;
 	memset(&callbacks, 0, sizeof(callbacks));
 	callbacks.VMInit = OnVMInit;
 	(*jvmti)->SetEventCallbacks(jvmti, &callbacks, sizeof(callbacks));
-	(*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE, JVMTI_EVENT_VM_INIT,
-			NULL);
+	(*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, NULL);
 
 	if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &starttime)) != JVMTI_ERROR_NONE){
 		printf("time error %d", error);
@@ -241,10 +272,13 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 }
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *_vm) {
+
+		
+	buildMethodList(top, 0);
+
 	
 	printTree(top,0);
-
-	printf("\nRuntime: %lu \n StackCount: %d\n", endtime-starttime, stackCount);
+	printf("\nRuntime: %lu \n StackCount: %d\n", (long) (endtime-starttime), stackCount);
 	printf("\nRuntime: %lu \n", endtime_c-starttime_c);
 	
 }
