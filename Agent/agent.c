@@ -46,11 +46,20 @@ time_t starttime_c, endtime_c;
 
 NodeList* list;
 
-TreeNode* createTreeNode(MethodTiming* methodTiming, TreeNode* parent) {
-	TreeNode* treeNode = (TreeNode*) malloc(sizeof(TreeNode));
+TreeNode* createTreeNode(MethodTiming* methodTiming, TreeNode* parent, jvmtiEnv* jvmti) {
+	jvmtiError error;
+	TreeNode* treeNode; 
+	if((error = (*jvmti)->Allocate(jvmti, sizeof(TreeNode), (unsigned char **)(&treeNode)) != JVMTI_ERROR_NONE)){
+		printf("Error allocating treeNode");
+		return NULL;
+	}
 	treeNode->method = methodTiming;
 	treeNode->parent = parent;
-	treeNode->children = (TreeNode*) malloc(INITIAL_CHILDREN_COUNT * sizeof(TreeNode));
+	if((error = (*jvmti)->Allocate(jvmti, INITIAL_CHILDREN_COUNT * sizeof(TreeNode), (unsigned char **)&(treeNode->children)) != JVMTI_ERROR_NONE)){
+		printf("Error allocating treeNode children");
+		return NULL;
+	}
+
 	treeNode->childrenCount = INITIAL_CHILDREN_COUNT;
 	treeNode->isTraversed = FALSE;
 	treeNode->children[0].isSet = FALSE;
@@ -63,8 +72,13 @@ TreeNode* createTreeNode(MethodTiming* methodTiming, TreeNode* parent) {
 	return treeNode;
 }
 
-MethodTiming* createMethodTiming(jmethodID method, char* methodName) {
-	MethodTiming* timing = (MethodTiming*) malloc(sizeof(MethodTiming));
+MethodTiming* createMethodTiming(jmethodID method, char* methodName, jvmtiEnv* jvmti) {
+	jvmtiError error;
+	MethodTiming* timing;
+	if((error = (*jvmti)->Allocate(jvmti, sizeof(MethodTiming), (unsigned char **) &timing) != JVMTI_ERROR_NONE)){
+		printf("Error allocating method Timing");
+		return NULL;
+	}
 	timing->method = method;
 	timing->methodName = methodName;
 	timing->count = 1;
@@ -85,29 +99,40 @@ TreeNode* searchChildren(TreeNode* parent, jmethodID methodID){
 	return NULL;
 }	
 
-void copyAndExtendChildrenList(TreeNode* parent){
-	TreeNode* temp = (TreeNode*) malloc(parent->childrenCount*CHILDREN_COUNT_MULTIPLIER* sizeof(TreeNode));	
-	memcpy(temp,parent->children, parent->childrenCount* sizeof(TreeNode)); 
+void copyAndExtendChildrenList(TreeNode* parent, jvmtiEnv* jvmti){
+	jvmtiError error;
+	TreeNode* temp;
+	if((error = (*jvmti)->Allocate(jvmti, parent->childrenCount*CHILDREN_COUNT_MULTIPLIER*sizeof(TreeNode), (unsigned char **) &temp) != JVMTI_ERROR_NONE)){
+		printf("Error allocating Extended Tree Node Children List");
+		return;
+	}
+	memcpy(temp,parent->children, parent->childrenCount * sizeof(TreeNode)); 
 		
 	//TODO find out why not possible....
-	//free(parent->children);
+	//free(parent->children->method);
+	//if ((error = (*jvmti)->Deallocate(jvmti, (unsigned char *)parent->children->method)) != JVMTI_ERROR_NONE) {
+	//	printf("Error deallocate old children list\n");
+	//}
 	parent->children = temp;
 	parent->childrenCount = parent->childrenCount*CHILDREN_COUNT_MULTIPLIER;
 }
 
-TreeNode* insertChildren(TreeNode* parent, TreeNode* insertChildren){
+TreeNode* insertChildren(TreeNode* parent, TreeNode* insertChildren, jvmtiEnv* jvmti){
 	TreeNode* list = parent->children;
+	jvmtiError error;
 	int count = 0;
 	while(list[count].isSet){
 		//List is full
 		if(count == parent->childrenCount){
-			copyAndExtendChildrenList(parent);
+			copyAndExtendChildrenList(parent, jvmti);
 			break;	
 		}
 		count++;
 	}
 	memcpy(&(list[count]), insertChildren, sizeof(TreeNode));
-	//free(insertChildren);
+	if ((error = (*jvmti)->Deallocate(jvmti, (unsigned char *)insertChildren)) != JVMTI_ERROR_NONE) {
+		printf("Error deallocate inserted Tree Node\n");
+	}
 	list[count].isSet = TRUE;
 	return &(list[count]);
 }
@@ -175,14 +200,7 @@ TreeNode* calcMaxSelf(TreeNode* top){
 		temp = top->children;
 	}
 
-
 	while(count < top->childrenCount && &(top->children[count]) != NULL && top->children[count].isSet){
-		//printf("\n %s %d\t%s %d", top->method->methodName, top->method->selfCount, temp->method->methodName, temp->method->selfCount);
-		//printf("\n %s %d %d", top->method->methodName, top->method->selfCount, count);
-		//printf("\n %d %d %d",  count, top->childrenCount, top->children[count].isSet);
-		//printf("\nis set 0 %d", top->children[0].isSet);
-		//printf("\nis set 1 %d", top->children[1].isSet);
-
 		childNode = calcMaxSelf(&(top->children[count]));
 		if(temp == NULL || (childNode != NULL && childNode->method->selfCount >= temp->method->selfCount)){
 			temp = childNode;
@@ -227,8 +245,15 @@ void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 	int ti;
 
 	stackCount = 0;
-	top = (TreeNode *) malloc(sizeof(TreeNode));
-	top->children = (TreeNode*) malloc(INITIAL_CHILDREN_COUNT * sizeof(TreeNode));
+	if((error = (*jvmti)->Allocate(jvmti, sizeof(TreeNode), (unsigned char **)(&top)) != JVMTI_ERROR_NONE)){
+		printf("Error allocating top tree node");
+		return;
+	}
+	
+	if((error = (*jvmti)->Allocate(jvmti, INITIAL_CHILDREN_COUNT * sizeof(TreeNode), (unsigned char **)&(top->children)) != JVMTI_ERROR_NONE)){
+		printf("Error allocating treeNode children");
+		return;
+	}
 	top->childrenCount = INITIAL_CHILDREN_COUNT;
 
 
@@ -254,9 +279,9 @@ void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 
 				TreeNode* children = searchChildren(current, frames[fi].method);				
 				if(children == NULL){
-					MethodTiming* childMethod = createMethodTiming(frames[fi].method, methodName);
-					TreeNode* childNode = createTreeNode(childMethod, current);
-					current = insertChildren(current, childNode);
+					MethodTiming* childMethod = createMethodTiming(frames[fi].method, methodName, jvmti);
+					TreeNode* childNode = createTreeNode(childMethod, current, jvmti);
+					current = insertChildren(current, childNode, jvmti);
 				}
 				else{
 					children->method->count++;
@@ -267,6 +292,8 @@ void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 		}
 				
 		//TODO find out why not possible...
+		//Reason: need to allocate children: sizeof(TreeNode*), children should be TreeNode**
+		//TODO
 		//freeAll(top);
 	}
 	
@@ -320,7 +347,6 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 }
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *_vm) {	
-	//buildMethodList(top, 0);
 	calcSelfFrames(top, 0);
 	printHottestMethods(top);
 	printTree(top,0);
