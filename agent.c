@@ -4,16 +4,16 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <time.h>
-
-typedef struct methodTiming MethodTiming;
-typedef struct treeNode TreeNode;
-typedef struct nodeList NodeList;
+#include <unistd.h>
 
 #define CHILDREN_COUNT_MULTIPLIER 2
 #define INITIAL_CHILDREN_COUNT 2
 #define MAX_FRAMES 10
 #define TRUE 1
 #define FALSE 0
+
+typedef struct methodTiming MethodTiming;
+typedef struct treeNode TreeNode;
 
 struct methodTiming {
 	jmethodID method;
@@ -31,20 +31,10 @@ struct treeNode {
 	int isTraversed;
 };
 
-struct nodeList {
-	jmethodID method;
-	char * methodName;
-	int selfTime;
-	int wallClockTime;
-	NodeList * next;
-};
-
 TreeNode* top;
 jlong starttime, endtime;
 int stackCount;
-time_t starttime_c, endtime_c;
-
-NodeList* list;
+int sleepTime;
 
 TreeNode* createTreeNode(MethodTiming* methodTiming, TreeNode* parent, jvmtiEnv* jvmti) {
 	jvmtiError error;
@@ -148,21 +138,6 @@ void freeAll(TreeNode* top){
 	free(top);
 }
 
-void printTree(TreeNode* top, int level){	
-	if(top->method != NULL && top->method->methodName != NULL){
-		printf("%d %s %d %d\n", level, top->method->methodName, top->method->count, top->method->selfCount);
-	} else{
-		printf("\n%d TOP\n", level);	
-	}
-	
-	TreeNode* children = top->children;
-	int count = 0;
-	while(count < top->childrenCount && &(children[count]) != NULL && children[count].isSet){
-		printTree(&(children[count]), level+1);
-		count++;
-	}
-}
-
 int calcStackSum(TreeNode* children, int childrenCount){
 	int sum = 0;
 	int count = 0;	
@@ -255,6 +230,9 @@ void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 		return;
 	}
 	top->childrenCount = INITIAL_CHILDREN_COUNT;
+	if ((error = (*jvmti)->GetTime(jvmti, &endtime)) != JVMTI_ERROR_NONE){
+		printf("error endtime\n");
+	}
 
 
 	while(TRUE){
@@ -270,10 +248,7 @@ void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 			stackCount++;
 
 			for (fi = infop->frame_count - 1; fi >= 0; fi--) {
-				if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &endtime)) != JVMTI_ERROR_NONE){
-					break;		
-				}
-				if ((error = (*jvmti)->GetMethodName(jvmti, frames[fi].method, &methodName, NULL, NULL)) != JVMTI_ERROR_NONE) {
+				if((error = (*jvmti)->GetMethodName(jvmti, frames[fi].method, &methodName, NULL, NULL)) != JVMTI_ERROR_NONE) {
 					break;
 				}
 
@@ -290,16 +265,15 @@ void JNICALL run(jvmtiEnv* jvmti, JNIEnv* jni, void* args) {
 				}
 			}
 		}
-				
-		//TODO find out why not possible...
-		//Reason: need to allocate children: sizeof(TreeNode*), children should be TreeNode**
-		//TODO
-		//freeAll(top);
+			
+		usleep(sleepTime);	
 	}
 	
-	time(&endtime_c);
 	if ((error = (*jvmti)->Deallocate(jvmti, (unsigned char *)stack_info)) != JVMTI_ERROR_NONE) {
 		printf("Error deallocate stack info\n");
+	}
+	if ((error = (*jvmti)->GetTime(jvmti, &endtime)) != JVMTI_ERROR_NONE){
+		printf("error endtime\n");
 	}
 }
 
@@ -314,20 +288,14 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 	jvmtiEnv* jvmti = NULL;
 	jvmtiError error;
 	(*_vm)->GetEnv(_vm, (void**) &jvmti, JVMTI_VERSION);
+	
+	sleepTime = 100; 	
 
 	jvmtiCapabilities requestedCapabilities, potentialCapabilities;
 	memset(&requestedCapabilities, 0, sizeof(requestedCapabilities));
 	if ((error = (*jvmti)->GetPotentialCapabilities(jvmti, &potentialCapabilities)) != JVMTI_ERROR_NONE) {
 		return -1;
 	}
-
-	if (potentialCapabilities.can_access_local_variables) {
-		requestedCapabilities.can_access_local_variables = 1;
-	}
-	if (potentialCapabilities.can_get_current_thread_cpu_time) {
-		requestedCapabilities.can_get_current_thread_cpu_time = 1;
-	}
-
 	if ((error = (*jvmti)->AddCapabilities(jvmti, &requestedCapabilities)) != JVMTI_ERROR_NONE) {
 		return -1;
 	}
@@ -337,28 +305,12 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM* _vm, char* options, void* reserved) 
 	callbacks.VMInit = OnVMInit;
 	(*jvmti)->SetEventCallbacks(jvmti, &callbacks, sizeof(callbacks));
 	(*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, NULL);
-
-	if((error = (*jvmti)->GetCurrentThreadCpuTime(jvmti, &starttime)) != JVMTI_ERROR_NONE){
-		return 0;		
-	}
-
-	time(&starttime_c);
 	return 0;
 }
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *_vm) {	
+	printf("\nRuntime: %lu \nStackCount: %d\n\n", (long) (endtime-starttime), stackCount);	
 	calcSelfFrames(top, 0);
-	printHottestMethods(top);
-	printTree(top,0);
-
-	NodeList * node = list;
-	printf("Top Methods\n");
-	while(node != NULL){
-		printf("%s %d %d\n", node->methodName, node->selfTime, node->wallClockTime);
-		node = node->next;	
-	}
-	printf("\nRuntime: %lu \n StackCount: %d\n", (long) (endtime-starttime), stackCount);
-	printf("\nRuntime: %lu \n", endtime_c-starttime_c);
-	
+	printHottestMethods(top);	
 }
 
