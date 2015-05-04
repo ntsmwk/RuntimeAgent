@@ -97,12 +97,6 @@ void copyAndExtendChildrenList(TreeNode* parent, jvmtiEnv* jvmti){
 		return;
 	}
 	memcpy(temp,parent->children, parent->childrenCount * sizeof(TreeNode)); 
-		
-	//TODO find out why not possible....
-	//free(parent->children->method);
-	//if ((error = (*jvmti)->Deallocate(jvmti, (unsigned char *)parent->children->method)) != JVMTI_ERROR_NONE) {
-	//	printf("Error deallocate old children list\n");
-	//}
 	parent->children = temp;
 	parent->childrenCount = parent->childrenCount*CHILDREN_COUNT_MULTIPLIER;
 }
@@ -156,9 +150,6 @@ void calcSelfFrames(TreeNode* top){
 		if(top->method != NULL){	
 			sum = calcStackSum(children, top->childrenCount); 
 			top->method->selfCount = top->method->count - sum;
-			if(top->method->selfCount < 0.0){
-			//	top->method->selfCount = 0.0;
-			}
 		}
 		calcSelfFrames(&(children[count]));
 		count++;
